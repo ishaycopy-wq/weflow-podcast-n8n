@@ -1,0 +1,53 @@
+{
+  "name": "ElevenLabs Voice Agent → n8n",
+  "meta": {
+    "description": "Receives webhook callbacks from ElevenLabs Voice Agent conversations. Extracts conversation_id, agent_id, and the latest transcript message for downstream processing (CRM update, sentiment analysis, task creation, etc.).",
+    "tool": "ElevenLabs",
+    "plan": "Creator ($22/mo) minimum",
+    "n8n_node": "Webhook (built-in) + Code node",
+    "auth": "Configure webhook URL in ElevenLabs Agent dashboard → Integrations → Webhook",
+    "verified": "April 14, 2026",
+    "source": "https://elevenlabs.io/docs/conversational-ai/introduction"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "path": "elevenlabs-agent-webhook",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook Receiver",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "elevenlabs-agent-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const { conversation_id, agent_id, transcript } = $input.first().json;\nconst last_message = transcript?.at(-1)?.message ?? null;\nconst last_role = transcript?.at(-1)?.role ?? null;\n\nreturn [{\n  conversation_id,\n  agent_id,\n  last_message,\n  last_role,\n  message_count: transcript?.length ?? 0,\n  processed_at: new Date().toISOString()\n}];"
+      },
+      "name": "Extract Transcript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ received: true, conversation_id: $json.conversation_id }) }}"
+      },
+      "name": "Respond 200 OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [680, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Receiver": { "main": [[{ "node": "Extract Transcript", "type": "main", "index": 0 }]] },
+    "Extract Transcript": { "main": [[{ "node": "Respond 200 OK", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
