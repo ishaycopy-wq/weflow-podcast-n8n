@@ -14,3 +14,7 @@ Thumbs.db
 
 # Node (if scripts added later)
 node_modules/
+
+# Pricing monitor — cache is committed intentionally, ignore temp files only
+/tmp/pricing-report.json
+/tmp/pricing-log.txt
