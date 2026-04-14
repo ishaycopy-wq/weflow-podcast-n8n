@@ -1,0 +1,200 @@
+name: Pricing Monitor
+
+on:
+  schedule:
+    # Runs every Monday and Thursday at 06:00 UTC (09:00 IDT)
+    - cron: "0 6 * * 1,4"
+  workflow_dispatch:
+    inputs:
+      force_report:
+        description: "Open an issue even if nothing changed (for testing)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write   # to commit updated cache files
+  issues: write     # to open issues on detected changes
+
+jobs:
+  check-pricing:
+    name: Check ElevenLabs / HeyGen / Kling AI Pricing
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout (with cache)
+        uses: actions/checkout@v4
+        with:
+          # Fetch the full history so we can commit updated cache
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Restore pricing cache
+        # The cache is committed to the repo in .pricing-cache/
+        # so it persists across runs without needing Actions cache
+        run: |
+          echo "Cache files present:"
+          ls -lh .pricing-cache/ 2>/dev/null || echo "(none — first run)"
+
+      - name: Run pricing check
+        id: pricing
+        run: |
+          mkdir -p .pricing-cache
+          node scripts/check-pricing.js > /tmp/pricing-report.json 2>/tmp/pricing-log.txt
+          cat /tmp/pricing-log.txt
+          echo "--- Report ---"
+          cat /tmp/pricing-report.json
+
+          # Extract key fields for later steps
+          ALL_OK=$(node -e "const r=require('/tmp/pricing-report.json'); console.log(r.all_ok)")
+          CHANGES=$(node -e "const r=require('/tmp/pricing-report.json'); console.log(r.changes.length)")
+          SUMMARY=$(node -e "const r=require('/tmp/pricing-report.json'); console.log(r.summary)")
+          ERRORS=$(node -e "const r=require('/tmp/pricing-report.json'); console.log(r.fetch_errors.length)")
+
+          echo "all_ok=${ALL_OK}" >> $GITHUB_OUTPUT
+          echo "changes=${CHANGES}" >> $GITHUB_OUTPUT
+          echo "fetch_errors=${ERRORS}" >> $GITHUB_OUTPUT
+          echo "summary=${SUMMARY}" >> $GITHUB_OUTPUT
+
+      - name: Add summary to job log
+        if: always()
+        run: |
+          echo "## Pricing Monitor Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run time**: $(date -u '+%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f /tmp/pricing-report.json ]; then
+            node -e "
+              const r = require('/tmp/pricing-report.json');
+              console.log('**Summary**: ' + r.summary);
+              console.log('');
+              if (r.changes.length > 0) {
+                console.log('### Changes Detected');
+                r.changes.forEach(c => {
+                  console.log('');
+                  console.log('**Tool**: ' + c.tool);
+                  console.log('**Field**: ' + c.field + ' (' + c.label + ')');
+                  console.log('**Was**: ' + c.old + ' → **Now**: ' + c.new);
+                  console.log('**Detail**: ' + c.detail);
+                });
+              }
+              if (r.fetch_errors.length > 0) {
+                console.log('### Fetch Errors');
+                r.fetch_errors.forEach(e => console.log('- ' + e.tool + ': ' + e.error));
+              }
+            " >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Open GitHub issue on pricing change
+        if: |
+          steps.pricing.outputs.all_ok == 'false' ||
+          github.event.inputs.force_report == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('/tmp/pricing-report.json', 'utf8'));
+            const now = new Date().toISOString().split('T')[0];
+
+            // Build issue body
+            const lines = [
+              '## Pricing Change Detected',
+              '',
+              `**Checked**: ${report.checked_at}`,
+              `**Summary**: ${report.summary}`,
+              '',
+            ];
+
+            if (report.changes.length > 0) {
+              lines.push('## Changes');
+              lines.push('');
+              for (const c of report.changes) {
+                lines.push(`### ${c.tool}`);
+                lines.push(`**Signal**: ${c.label}`);
+                lines.push(`**Was**: \`${c.old}\` → **Now**: \`${c.new}\``);
+                lines.push(`**Severity**: ${c.severity}`);
+                lines.push(`**Detail**: ${c.detail}`);
+                lines.push(`**Pricing page**: ${c.url}`);
+                lines.push('');
+              }
+            }
+
+            if (report.fetch_errors.length > 0) {
+              lines.push('## Fetch Errors');
+              lines.push('');
+              for (const e of report.fetch_errors) {
+                lines.push(`- **${e.tool}**: ${e.error}`);
+              }
+              lines.push('');
+            }
+
+            lines.push('## Required Actions');
+            lines.push('');
+            lines.push('1. Visit the pricing page(s) above and verify the current plans and prices');
+            lines.push('2. Update the affected `docs/*.md` setup guide with the new pricing');
+            lines.push('3. Update `scripts/check-pricing.js` signal patterns if the page structure changed');
+            lines.push('4. Update the `meta.verified` date in affected workflow JSONs');
+            lines.push('5. Update the Notion living reference doc: https://app.notion.com/p/34145a8c529f8165b6b7e011bdcd1827');
+            lines.push('6. Update the interactive dashboard if plan names or baseline stack cost changed');
+            lines.push('7. Close this issue once all updates are confirmed');
+            lines.push('');
+            lines.push('---');
+            lines.push('*Opened automatically by the Pricing Monitor workflow*');
+
+            // Check if a similar open issue already exists (avoid duplicates)
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'pricing',
+            });
+
+            const tools = [...new Set(report.changes.map(c => c.tool).concat(report.fetch_errors.map(e => e.tool)))];
+            const title = report.fetch_errors.length > 0 && report.changes.length === 0
+              ? `[Pricing Monitor] Fetch error — ${report.fetch_errors.map(e => e.tool).join(', ')} (${now})`
+              : `[Pricing Monitor] Change detected — ${tools.join(' / ')} (${now})`;
+
+            // Check for recent duplicate (same title prefix in the last 7 days)
+            const recentDuplicate = existing.data.find(issue =>
+              issue.title.startsWith('[Pricing Monitor]') &&
+              new Date(issue.created_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+            );
+
+            if (recentDuplicate && github.event.inputs?.force_report !== 'true') {
+              console.log(`Skipping issue creation — recent open issue exists: #${recentDuplicate.number}`);
+              // Add a comment to the existing issue instead
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: recentDuplicate.number,
+                body: `### Follow-up check — ${now}\n\n${report.summary}\n\nSame changes still detected — please review and update.`,
+              });
+            } else {
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body: lines.join('\n'),
+                labels: ['pricing', 'automated'],
+                assignees: [],
+              });
+              console.log(`Issue created: ${issue.data.html_url}`);
+              core.setOutput('issue_url', issue.data.html_url);
+            }
+
+      - name: Commit updated pricing cache
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .pricing-cache/ || true
+          if git diff --cached --quiet; then
+            echo "No cache changes to commit"
+          else
+            git commit -m "chore: update pricing cache [$(date -u '+%Y-%m-%d')]"
+            git push
+          fi
