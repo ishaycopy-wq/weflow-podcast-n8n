@@ -1,0 +1,111 @@
+{
+  "name": "Podcast Voice Generator - ElevenLabs",
+  "meta": {
+    "description": "Daily podcast voice generation pipeline. Triggers on schedule, writes a script via GPT-4o, synthesizes audio via ElevenLabs TTS (eleven_turbo_v2_5), uploads MP3 to Google Drive, and sends a Telegram notification with the download link.",
+    "tool": "ElevenLabs",
+    "plan": "Creator ($22/mo) minimum for 192kbps API access",
+    "n8n_node": "Official verified node — search 'ElevenLabs' in n8n nodes panel",
+    "auth": "xi-api-key header",
+    "verified": "April 14, 2026",
+    "source": "https://elevenlabs.io/pricing"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "days", "daysInterval": 1 }]
+        }
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "user",
+              "content": "Write a 3-minute podcast script about {{$json.topic}}. Make it conversational and engaging. Output plain text only — no markdown, no headers."
+            }
+          ]
+        }
+      },
+      "name": "OpenAI Script",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "operation": "textToSpeech",
+        "voiceId": "YOUR_VOICE_CLONE_ID",
+        "text": "={{ $json.message.content }}",
+        "modelId": "eleven_turbo_v2_5",
+        "voiceSettings": {
+          "stability": 0.75,
+          "similarityBoost": 0.85,
+          "style": 0.2,
+          "useSpeakerBoost": true
+        }
+      },
+      "name": "ElevenLabs TTS",
+      "type": "n8n-nodes-elevenlabs.elevenlabs",
+      "typeVersion": 1,
+      "position": [680, 300],
+      "credentials": {
+        "elevenLabsApi": {
+          "name": "ElevenLabs account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "name": "={{ 'podcast_' + $now.format('yyyy-MM-dd') + '.mp3' }}",
+        "driveId": { "__rl": true, "mode": "list" },
+        "folderId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_DRIVE_FOLDER_ID",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "name": "Google Drive Upload",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [900, 300],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=✅ New podcast episode ready!\nDate: {{ $now.format('yyyy-MM-dd') }}\nLink: {{ $json.webViewLink }}"
+      },
+      "name": "Telegram Notify",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1120, 300],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": { "main": [[{ "node": "OpenAI Script", "type": "main", "index": 0 }]] },
+    "OpenAI Script": { "main": [[{ "node": "ElevenLabs TTS", "type": "main", "index": 0 }]] },
+    "ElevenLabs TTS": { "main": [[{ "node": "Google Drive Upload", "type": "main", "index": 0 }]] },
+    "Google Drive Upload": { "main": [[{ "node": "Telegram Notify", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
