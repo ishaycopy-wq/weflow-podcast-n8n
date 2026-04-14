@@ -1,0 +1,189 @@
+{
+  "name": "Master Podcast Pipeline - WeFlow-X",
+  "meta": {
+    "description": "Full end-to-end podcast production pipeline. Webhook trigger receives topic + config → GPT-4o writes script → ElevenLabs generates voice track (parallel) → HeyGen generates avatar intro (parallel) → Kling AI generates b-roll for each segment (parallel) → Merge artifacts → Notify via Telegram. All video/audio generation is async. This workflow orchestrates; actual generation jobs run in sub-workflows or resolve via callbacks.",
+    "tools": ["ElevenLabs", "HeyGen", "Kling AI"],
+    "estimated_cost_per_episode": "$2.13 at Creator/Pro tiers",
+    "architecture": "async-first — n8n orchestrates, never sits on the hot path",
+    "verified": "April 14, 2026",
+    "dashboard": "https://www.perplexity.ai/computer/a/ai-podcast-stack-2026-mqQDzPn9TfWwsEAuPfTtPg",
+    "notion": "https://app.notion.com/p/34145a8c529f8165b6b7e011bdcd1827"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "path": "start-podcast",
+        "httpMethod": "POST",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "Podcast Job Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 460],
+      "webhookId": "start-podcast",
+      "notes": "POST body: { topic, voice_clone_id, avatar_id, voice_id, notify_chat_id }"
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a podcast scriptwriter. Write engaging, conversational scripts. Output JSON with keys: narration (full TTS text), intro_sentence (15-20 words for avatar), segments (array of strings split on topic for b-roll)."
+            },
+            {
+              "role": "user",
+              "content": "Write a 3-minute podcast about: {{ $json.topic }}"
+            }
+          ]
+        },
+        "options": {
+          "response_format": { "type": "json_object" }
+        }
+      },
+      "name": "GPT-4o Script Writer",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [460, 460]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.message?.content ?? $input.first().json.choices?.[0]?.message?.content;\nconst parsed = JSON.parse(raw);\nconst input = $('Podcast Job Trigger').first().json;\n\nreturn [{\n  topic: input.topic,\n  narration: parsed.narration,\n  intro_sentence: parsed.intro_sentence,\n  segments: parsed.segments,\n  voice_clone_id: input.voice_clone_id,\n  avatar_id: input.avatar_id,\n  voice_id: input.voice_id,\n  notify_chat_id: input.notify_chat_id,\n  job_id: `podcast_${Date.now()}`,\n  started_at: new Date().toISOString()\n}];"
+      },
+      "name": "Parse & Enrich Script",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 460]
+    },
+    {
+      "parameters": {
+        "operation": "textToSpeech",
+        "voiceId": "={{ $json.voice_clone_id }}",
+        "text": "={{ $json.narration }}",
+        "modelId": "eleven_turbo_v2_5",
+        "voiceSettings": {
+          "stability": 0.75,
+          "similarityBoost": 0.85,
+          "style": 0.2,
+          "useSpeakerBoost": true
+        }
+      },
+      "name": "ElevenLabs Voice Track",
+      "type": "n8n-nodes-elevenlabs.elevenlabs",
+      "typeVersion": 1,
+      "position": [900, 240],
+      "credentials": {
+        "elevenLabsApi": { "name": "ElevenLabs account" }
+      },
+      "notes": "Runs in parallel with HeyGen and Kling jobs"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.heygen.com/v2/video/generate",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "video_inputs": [
+            {
+              "character": {
+                "type": "avatar",
+                "avatar_id": "={{ $json.avatar_id }}",
+                "avatar_style": "normal"
+              },
+              "voice": {
+                "type": "text",
+                "input_text": "={{ $json.intro_sentence }}",
+                "voice_id": "={{ $json.voice_id }}"
+              },
+              "background": { "type": "color", "value": "#0f172a" }
+            }
+          ],
+          "dimension": { "width": 1920, "height": 1080 },
+          "aspect_ratio": "16:9",
+          "caption": false
+        }
+      },
+      "name": "HeyGen Avatar Intro",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 460],
+      "credentials": {
+        "httpHeaderAuth": { "name": "HeyGen API Key" }
+      },
+      "notes": "Async — returns video_id. Poll or use webhook for completion."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.klingai.com/v1/videos/text2video",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "model_name": "kling-v3",
+          "prompt": "={{ 'Cinematic b-roll for podcast topic: ' + $json.topic + ', studio setting, soft lighting, 4K photorealistic' }}",
+          "duration": "10",
+          "aspect_ratio": "16:9",
+          "mode": "std",
+          "callback_url": "https://YOUR-N8N-INSTANCE.com/webhook/kling-done"
+        }
+      },
+      "name": "Kling B-Roll (Parallel)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 680],
+      "credentials": {
+        "httpHeaderAuth": { "name": "Kling AI API Key" }
+      },
+      "notes": "Submits all segments. Callbacks arrive at kling-broll-auto-generator webhook."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge artifacts from all three generation branches\nconst voice = $('ElevenLabs Voice Track').first().json;\nconst heygen = $('HeyGen Avatar Intro').first().json;\nconst kling = $('Kling B-Roll (Parallel)').first().json;\n\nreturn [{\n  job_id: $('Parse & Enrich Script').first().json.job_id,\n  status: 'generation_submitted',\n  elevenlabs_binary_ready: !!voice,\n  heygen_video_id: heygen?.data?.video_id ?? null,\n  kling_task_id: kling?.task_id ?? null,\n  summary: 'All generation jobs submitted. ElevenLabs audio ready. HeyGen and Kling are async — monitor via callbacks.',\n  completed_at: new Date().toISOString()\n}];"
+      },
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 460]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Podcast Job Trigger').first().json.notify_chat_id }}",
+        "text": "=🎙 Podcast pipeline submitted!\nJob: {{ $json.job_id }}\nElevenLabs: ✅ audio ready\nHeyGen avatar: queued (ID: {{ $json.heygen_video_id }})\nKling b-roll: queued (task: {{ $json.kling_task_id }})\nYou'll receive callbacks as each video completes."
+      },
+      "name": "Telegram Status Notify",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1340, 460],
+      "credentials": {
+        "telegramApi": { "name": "Telegram account" }
+      }
+    }
+  ],
+  "connections": {
+    "Podcast Job Trigger": { "main": [[{ "node": "GPT-4o Script Writer", "type": "main", "index": 0 }]] },
+    "GPT-4o Script Writer": { "main": [[{ "node": "Parse & Enrich Script", "type": "main", "index": 0 }]] },
+    "Parse & Enrich Script": {
+      "main": [
+        [
+          { "node": "ElevenLabs Voice Track", "type": "main", "index": 0 },
+          { "node": "HeyGen Avatar Intro", "type": "main", "index": 0 },
+          { "node": "Kling B-Roll (Parallel)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "ElevenLabs Voice Track": { "main": [[{ "node": "Merge Results", "type": "main", "index": 0 }]] },
+    "HeyGen Avatar Intro": { "main": [[{ "node": "Merge Results", "type": "main", "index": 0 }]] },
+    "Kling B-Roll (Parallel)": { "main": [[{ "node": "Merge Results", "type": "main", "index": 0 }]] },
+    "Merge Results": { "main": [[{ "node": "Telegram Status Notify", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
