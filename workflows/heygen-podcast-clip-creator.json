@@ -1,0 +1,138 @@
+{
+  "name": "Podcast Clip Creator - HeyGen",
+  "meta": {
+    "description": "Telegram-triggered avatar video pipeline. Receives a topic via Telegram message, generates a 60-second script via GPT-4o, submits to HeyGen for avatar video generation (async), waits 5 minutes, then polls for the completed video URL.",
+    "tool": "HeyGen",
+    "plan": "Creator ($29/mo) for basic API — Scale API ($330/mo) for production automation",
+    "n8n_node": "HTTP Request node (or community node: n8n-nodes-heygen)",
+    "auth": "X-Api-Key header — get from HeyGen Developer Portal",
+    "warning": "Creator plan = 200 Premium Credits = only 10 min Avatar IV/month. Avatar IV costs 20 credits/min.",
+    "verified": "April 14, 2026",
+    "source": "https://help.heygen.com/en/articles/9204682"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": {}
+      },
+      "name": "Telegram Topic Input",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "user",
+              "content": "Write a punchy 60-second podcast script about: {{$json.message.text}}. Be direct and conversational. No markdown formatting — plain spoken text only."
+            }
+          ]
+        }
+      },
+      "name": "AI Script Writer",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.heygen.com/v2/video/generate",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Api-Key", "value": "={{ $credentials.value }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "video_inputs": [
+            {
+              "character": {
+                "type": "avatar",
+                "avatar_id": "YOUR_AVATAR_ID",
+                "avatar_style": "normal"
+              },
+              "voice": {
+                "type": "text",
+                "input_text": "={{ $json.message.content }}",
+                "voice_id": "YOUR_VOICE_ID"
+              },
+              "background": {
+                "type": "color",
+                "value": "#1a1a2e"
+              }
+            }
+          ],
+          "dimension": { "width": 1920, "height": 1080 },
+          "aspect_ratio": "16:9",
+          "caption": false
+        }
+      },
+      "name": "HeyGen Generate Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "HeyGen API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "minutes"
+      },
+      "name": "Wait 5 Minutes",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.heygen.com/v1/video_status.get?video_id={{ $node['HeyGen Generate Video'].json.data.video_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Api-Key", "value": "={{ $credentials.value }}" }
+          ]
+        }
+      },
+      "name": "Fetch Video Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "HeyGen API Key"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Topic Input": { "main": [[{ "node": "AI Script Writer", "type": "main", "index": 0 }]] },
+    "AI Script Writer": { "main": [[{ "node": "HeyGen Generate Video", "type": "main", "index": 0 }]] },
+    "HeyGen Generate Video": { "main": [[{ "node": "Wait 5 Minutes", "type": "main", "index": 0 }]] },
+    "Wait 5 Minutes": { "main": [[{ "node": "Fetch Video Status", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
