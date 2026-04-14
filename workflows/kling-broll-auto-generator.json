@@ -1,0 +1,137 @@
+{
+  "name": "B-Roll Generator - Kling AI",
+  "meta": {
+    "description": "Splits an incoming podcast script into segments, submits each to Kling AI (kling-v3) for cinematic b-roll generation via HTTP Request, then receives async webhook callbacks when each video is ready and downloads the file. Uses callback_url pattern — do NOT store video URLs without downloading; they are time-limited.",
+    "tool": "Kling AI",
+    "plan": "Pro ($37/mo) minimum for API access",
+    "n8n_node": "HTTP Request node (no official or community node available)",
+    "auth": "Authorization: Bearer YOUR_API_KEY",
+    "warning": "Generated video download URLs are TIME-LIMITED. Download the binary immediately — never store the URL alone.",
+    "verified": "April 14, 2026",
+    "source": "https://klingai.com/pricing"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "path": "podcast-script",
+        "httpMethod": "POST",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "Script Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "podcast-script-input"
+    },
+    {
+      "parameters": {
+        "jsCode": "const script = $input.first().json.script;\nif (!script) throw new Error('No script provided in request body');\n\n// Split on double newlines, filter out empty/short segments\nconst segments = script\n  .split('\\n\\n')\n  .map(s => s.trim())\n  .filter(s => s.length > 20);\n\nreturn segments.map((seg, i) => ({\n  segment_index: i,\n  text: seg,\n  visualPrompt: `Cinematic shot for podcast, ${seg.substring(0, 120)}, wide angle, soft studio lighting, 4K, photorealistic`,\n  total_segments: segments.length\n}));"
+      },
+      "name": "Split to Segments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.klingai.com/v1/videos/text2video",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $credentials.value }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "model_name": "kling-v3",
+          "prompt": "={{ $json.visualPrompt }}",
+          "duration": "5",
+          "aspect_ratio": "16:9",
+          "cfg_scale": 0.5,
+          "mode": "std",
+          "callback_url": "https://YOUR-N8N-INSTANCE.com/webhook/kling-done"
+        }
+      },
+      "name": "Kling Generate B-Roll",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Kling AI API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "path": "kling-done",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Kling Callback Receiver",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [900, 180],
+      "webhookId": "kling-callback"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nif (data.status !== 'succeed') {\n  throw new Error(`Kling task ${data.task_id} failed with status: ${data.status}`);\n}\nconst videoUrl = data.works?.[0]?.resource?.resource;\nif (!videoUrl) throw new Error('No video URL in callback payload');\nreturn [{\n  task_id: data.task_id,\n  video_url: videoUrl,\n  duration: data.works?.[0]?.resource?.duration,\n  width: data.works?.[0]?.resource?.width,\n  height: data.works?.[0]?.resource?.height\n}];"
+      },
+      "name": "Validate Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 180]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.video_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "name": "Download Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 180]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"received\": true, \"task_id\": \"{{ $json.task_id }}\" }"
+      },
+      "name": "Ack Callback",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 420]
+    }
+  ],
+  "connections": {
+    "Script Webhook": { "main": [[{ "node": "Split to Segments", "type": "main", "index": 0 }]] },
+    "Split to Segments": { "main": [[{ "node": "Kling Generate B-Roll", "type": "main", "index": 0 }]] },
+    "Kling Callback Receiver": {
+      "main": [
+        [
+          { "node": "Validate Callback", "type": "main", "index": 0 },
+          { "node": "Ack Callback", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validate Callback": { "main": [[{ "node": "Download Video", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
