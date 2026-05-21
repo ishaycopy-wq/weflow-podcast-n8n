@@ -1,10 +1,10 @@
 {
   "creator_price": true,
-  "pro_price": true,
+  "pro_price": false,
   "scale_price": false,
-  "avatar_iv_credits": false,
+  "avatar_iv_credits": true,
   "creator_credits": false,
-  "_content_hash": "05e2e31a05ee1388",
-  "_checked_at": "2026-05-18T09:53:36.517Z",
+  "_content_hash": "4fa92686d56c697c",
+  "_checked_at": "2026-05-21T09:32:31.354Z",
   "_url": "https://www.heygen.com/pricing"
 }
