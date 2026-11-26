@@ -1,10 +1,10 @@
 {
-  "starter_price": false,
+  "starter_price": true,
   "creator_price": false,
   "pro_price": true,
   "scale_price": false,
   "creator_chars": false,
-  "_content_hash": "5ed8d70a460fee3e",
-  "_checked_at": "2026-11-23T17:11:46.761Z",
+  "_content_hash": "d7a45727a2b851cd",
+  "_checked_at": "2026-11-26T16:15:26.764Z",
   "_url": "https://elevenlabs.io/pricing"
 }
